@@ -20,7 +20,7 @@ def _col(row, *names):
     return None
 
 
-def make_items(split="test", n=-1, max_per_prop=150, seed=0):
+def make_items(split="test", n=-1, max_per_prop=-1, seed=0):
     try:
         from datasets import load_dataset
     except ImportError as e:
@@ -44,11 +44,12 @@ def make_items(split="test", n=-1, max_per_prop=150, seed=0):
             question = f"What is the {prop} of {subj}?"
         by_rel.setdefault(prop, []).append((str(subj), str(gold), str(question)))
 
-    # Sampling: at most max_per_prop items per relation, then shuffle
+    # Sampling: at most max_per_prop items per relation (-1 = no cap), then shuffle
     random.seed(seed)
     pool = []
     for rel, rows in by_rel.items():
-        rows = rows[:max_per_prop]
+        if max_per_prop and max_per_prop > 0:
+            rows = rows[:max_per_prop]
         for subj, gold, q in rows:
             pool.append({"relation": rel, "subject": subj, "gold": gold, "question": q})
     random.shuffle(pool)

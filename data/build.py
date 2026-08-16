@@ -36,21 +36,50 @@ def gen_closedbook(model, tok, prompt):
     return tok.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True)
 
 
+def gen_closedbook_batch(model, tok, prompts, batch_size=64):
+    """Batch closed-book greedy generation (identical greedy results to gen_closedbook,
+    but ~5-10x faster for large item sets). Left-pads so newly generated tokens are
+    appended at a fixed offset (in_len) for every sample in the batch."""
+    pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
+    old_side = tok.padding_side
+    tok.padding_side = "left"
+    outs = []
+    try:
+        model.eval()
+        for i in range(0, len(prompts), batch_size):
+            batch = prompts[i:i + batch_size]
+            enc = tok(batch, return_tensors="pt", padding=True).to(model.device)
+            with torch.no_grad():
+                out = model.generate(
+                    **enc, max_new_tokens=config.MAX_NEW_TOKENS, do_sample=False,
+                    pad_token_id=pad_id, eos_token_id=tok.eos_token_id,
+                )
+            in_len = enc.input_ids.shape[1]
+            for j in range(len(batch)):
+                outs.append(tok.decode(out[j][in_len:], skip_special_tokens=True))
+    finally:
+        tok.padding_side = old_side
+    return outs
+
+
 def answer_correct(gen, gold):
     """Bidirectional substring match: tolerate multi-token truncation (e.g. gold="New York City", gen="New York")."""
     a, b = norm(gold), norm(gen)
     return (a in b) or (b in a)
 
 
-def build_samples(model, tok, items, out_path, seed):
+def build_samples(model, tok, items, out_path, seed, batch_size=64):
     random.seed(seed)
     samples = []
     counts = [0, 0, 0, 0]
 
-    for it in items:
+    # Batch closed-book generation (greedy results identical to per-item, much faster)
+    pri_prompts = [f"{it['question']}\nAnswer:" for it in items]
+    gens = gen_closedbook_batch(model, tok, pri_prompts, batch_size)
+
+    for it, gen in zip(items, gens):
         question = it["question"]
         pri_prompt = f"{question}\nAnswer:"
-        gen = gen_closedbook(model, tok, pri_prompt)
         m_star = int(answer_correct(gen, it["gold"]))
 
         correct_ctx = f"According to Wikipedia, {it['correct_statement']}"
