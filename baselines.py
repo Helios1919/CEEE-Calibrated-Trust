@@ -119,7 +119,7 @@ def dec_adacad(tk, f, pc, pm):
     jsd = f[2]
     if jsd <= config.ADACAD_THETA:
         return dec_greedy_ctx(tk, f, pc, pm)   # 无冲突 → 信上下文
-    alpha = jsd                                # 冲突越强，对比放大越强
+    alpha = (1 - jsd) ** config.ADACAD_GAMMA   # 冲突越强，对比越弱：α=(1−JSD)^γ
     q = (1 + alpha) * tk["z_ctx"] - alpha * tk["z_pri"]
     return _argmax_token(tk, q)
 

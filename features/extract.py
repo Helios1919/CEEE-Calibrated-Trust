@@ -96,7 +96,7 @@ def _entropy(p):
 
 def _jsd(p, q):
     m = 0.5 * (p + q)
-    return 0.5 * (_entropy(p) + _entropy(q)) - _entropy(m)
+    return _entropy(m) - 0.5 * (_entropy(p) + _entropy(q))  # JSD = H(m) − ½H(p) − ½H(q)（非负）
 
 
 # --------------------------------------------------------------------------- #
