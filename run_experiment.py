@@ -23,7 +23,7 @@ from sklearn.model_selection import train_test_split
 
 import config
 from config import STATE_NAMES
-from data import facts, popqa
+from data import facts, popqa, counterfact
 from data.build import build_samples, load_model
 from features.extract import CATEGORIES, FEATURE_NAMES, Forwarder, extract_all
 from estimator import (evaluate_probs, predict_cm, predict_probs, train_estimator)
@@ -51,6 +51,8 @@ def get_items(source):
         return popqa.make_items(split=config.POPQA_SPLIT, n=config.POPQA_N,
                                 max_per_prop=config.POPQA_MAX_PER_PROP,
                                 seed=config.SEED)
+    if source == "counterfact":
+        return counterfact.make_items(n=config.COUNTERFACT_N, seed=config.SEED)
     raise ValueError(source)
 
 
@@ -59,21 +61,51 @@ def load_samples(path):
         return [json.loads(l) for l in f if l.strip()]
 
 
-def make_split(y, seed=0):
-    idx = np.arange(len(y))
+def _split(a, y_a, test_size, seed):
+    try:
+        return train_test_split(a, test_size=test_size, random_state=seed,
+                                stratify=y_a)
+    except ValueError:
+        # 某类样本过少导致 stratified 失败时，退化为随机切分
+        return train_test_split(a, test_size=test_size, random_state=seed)
 
-    def _split(a, y_a, test_size):
-        try:
-            return train_test_split(a, test_size=test_size, random_state=seed,
-                                    stratify=y_a)
-        except ValueError:
-            # 某类样本过少导致 stratified 失败时，退化为随机切分
-            return train_test_split(a, test_size=test_size, random_state=seed)
 
-    tr, rest = _split(idx, y, 1 - config.TRAIN_FRAC)
-    va, te = _split(rest, y[rest],
-                    config.TEST_FRAC / (config.VAL_FRAC + config.TEST_FRAC))
-    return {"tr": tr, "va": va, "te": te}
+def group_ids(samples):
+    """为每个样本赋 (relation, subject) 组 id，供无泄漏分组切分。"""
+    keys = {}
+    ids = []
+    for s in samples:
+        k = (s["relation"], s["subject"])
+        if k not in keys:
+            keys[k] = len(keys)
+        ids.append(keys[k])
+    return np.array(ids)
+
+
+def make_group_split(groups, group_label, seed=0):
+    """按组切分 train/val/test：同一 subject 的两条变体（正确/错误上下文）永不跨 split。
+
+    数据构建阶段每个 subject 产出 c*=1 与 c*=0 两条样本，且共享 question/上下文文本
+    与相同的 m_star。若按样本随机切分，模型可在 train 上"背下"某 subject 的 m*，
+    再凭相同文本在 test 上认出同一 subject 直接猜中 m*，导致标签泄漏、指标虚高。
+
+    groups: [N] 组 id（group_ids() 产出）；group_label: [N] 组级标签（用 m_star 分层，
+    同一组内 m_star 恒等，故组级分层等价于样本级分层且无泄漏）。
+    返回 {"tr","va","te"} 的样本索引（0..N-1）。
+    """
+    uniq_g, first_idx = np.unique(groups, return_index=True)
+    g_lab = np.asarray(group_label)[first_idx]          # 每组取一条标签（组内恒等）
+    g_arr = np.arange(len(uniq_g))
+
+    g_tr, g_rest = _split(g_arr, g_lab, 1 - config.TRAIN_FRAC, seed)
+    g_va, g_te = _split(g_rest, g_lab[g_rest],
+                        config.TEST_FRAC / (config.VAL_FRAC + config.TEST_FRAC),
+                        seed)
+
+    def _expand(g_sel):
+        return np.where(np.isin(groups, uniq_g[g_sel]))[0]
+
+    return {"tr": _expand(g_tr), "va": _expand(g_va), "te": _expand(g_te)}
 
 
 def sanitize(o):
@@ -95,7 +127,8 @@ def mean_std(vals):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", choices=["facts", "popqa"], default=config.DATA_SOURCE)
+    ap.add_argument("--data", choices=["facts", "popqa", "counterfact"],
+                    default=config.DATA_SOURCE)
     ap.add_argument("--model", default=config.MODEL_NAME)
     ap.add_argument("--force-build", action="store_true")
     ap.add_argument("--force-extract", action="store_true")
@@ -111,7 +144,8 @@ def main():
     config.FEATURE_PATH = config.ROOT / f"features_{tag}.npz"
     config.TOPK_PATH = config.ROOT / f"topk_logits_{tag}.pkl"
     config.ESTIMATOR_PATH = config.ROOT / f"estimator_{tag}.pt"
-    # RESULT_PATH 保持 results.json：反映最近一次运行，results.py 直接读取
+    # 结果按数据源隔离：results_{tag}.json，避免多数据源互相覆盖
+    config.RESULT_PATH = config.ROOT / f"results_{tag}.json"
 
     logf = setup_logging()
     logging.info(f"日志: {logf} | 模型: {args.model} | 数据源: {args.data}")
@@ -153,7 +187,9 @@ def main():
     logging.info(f"  特征 X: {X.shape}（{len(FEATURE_NAMES)} 维）")
 
     # ------------------------------------------------ 3 split
-    splits = make_split(y, seed=config.SEED)
+    # 无泄漏分组切分：同一 subject 的正确/错误上下文两条变体绑定在同一集合。
+    gid = group_ids(samples)
+    splits = make_group_split(gid, m_star, seed=config.SEED)
     te = splits["te"]
 
     # ------------------------------------------------ 4 train
@@ -225,7 +261,7 @@ def main():
         te_idx = np.array([i for i, r in enumerate(rels) if r in held])
         rest_idx = np.array([i for i, r in enumerate(rels) if r not in held])
         if len(te_idx) and len(rest_idx):
-            sub = make_split(y[rest_idx], seed=config.SEED)
+            sub = make_group_split(gid[rest_idx], m_star[rest_idx], seed=config.SEED)
             gsplits = {"tr": rest_idx[sub["tr"]], "va": rest_idx[sub["va"]], "te": te_idx}
             _, _, _, grep, _ = train_estimator(
                 X, y, c_star, m_star, gsplits, epochs=config.EPOCHS, lr=config.LR,

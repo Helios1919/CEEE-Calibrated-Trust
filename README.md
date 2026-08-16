@@ -57,7 +57,7 @@ p_m   = P(resistance)  + P(agreement)  # memory is correct
 ### Scope and limitations
 
 - Contexts are synthesized by corpus substitution (NQ-Swap recipe) over real PopQA
-  questions. Wiring a real retriever is a documented next step.
+  and CounterFact questions. Wiring a real retriever is a documented next step.
 - Decoding is single-token (first-token) EM, matching the ARR/CAD/AdaCAD/CoRect
   convention. Full multi-token generation is left as future work.
 
@@ -68,13 +68,14 @@ config.py            global config (override via CRED_MODEL / CRED_DATA / CRED_N
                      CRED_SEED / CRED_CROSS_MODEL env vars)
 run_experiment.py    end-to-end pipeline: build → extract → split → train →
                      baselines → decode → ablation → generalization → cross-model
-results.py           prints a readable summary table from results.json
+results.py           prints a readable summary for every results_*.json
 baselines.py         single-signal discriminators + downstream decoders
                      (greedy / CAD / ARR / AdaCAD / CoRect / CRED-hard / CRED-mix)
 estimator.py         4-way MLP + temperature scaling + AUROC/ECE metrics
 data/build.py        builds four-state labels from ITEM schemas
 data/facts.py        built-in 80-item offline smoke set
 data/popqa.py        real PopQA loader (corpus-substituted contexts)
+data/counterfact.py  CounterFact loader (corpus-substituted contexts)
 features/extract.py  S1–S14 signal extraction (two forward passes + hooks + LogitLens)
 signal-bank.md       detailed specification of every signal (formulas + pseudocode)
 run.sh               one-shot entrypoint
@@ -90,15 +91,18 @@ pip install -r requirements.txt
 # 1) Offline smoke test (80 built-in facts, no network, a few minutes)
 bash run.sh --data facts
 
-# 2) Full comparison (real PopQA, 1500 items by default)
+# 2) Full comparison (real PopQA, 3000 items by default)
 bash run.sh --data popqa
+
+# 3) Second full dataset (CounterFact, 3000 items)
+bash run.sh --data counterfact
 ```
 
 ### Command-line flags
 
 | flag | effect |
 |------|--------|
-| `--data {facts,popqa}` | data source (default from `CRED_DATA`) |
+| `--data {facts,popqa,counterfact}` | data source (default from `CRED_DATA`) |
 | `--model NAME` | HF model id (default `Qwen/Qwen2.5-7B`, or `CRED_MODEL`) |
 | `--force-build` | rebuild labels even if cached |
 | `--force-extract` | re-extract features even if cached |
@@ -133,17 +137,21 @@ On a cluster, use `sbatch slurm.sh`.
 
 ## Representative results
 
-PopQA (1500 items × 2 contexts) + `Qwen/Qwen2.5-7B`, mean over seeds:
+Leakage-free split: train/val/test are partitioned by `(relation, subject)`, so
+a subject's two context variants never cross the split boundary (the old
+sample-level split inflated AUROC by ~0.03). 3000 items × 2 contexts per
+dataset, `Qwen/Qwen2.5-7B` (base), main seed (the estimator is trained over
+seeds 0/1/2 for stability).
 
-| metric | value |
-|--------|------:|
-| AUROC($c^*$) / AUROC($m^*$) | 0.749 / 0.885 |
-| best single signal ($c^*$ / $m^*$) | 0.597 / 0.844 |
-| logistic (linear, all features) | 0.709 / 0.872 |
-| 4-way accuracy / macro-F1 | 53.5% / 0.554 |
-| ECE | 0.014 |
-| `CRED-mix` overall EM | 51.7% |
-| `CRED-mix` EM on *resistance* | 55.1% |
+| metric | PopQA | CounterFact |
+|--------|------:|------------:|
+| AUROC($c^*$) / AUROC($m^*$) | 0.707 / 0.870 | 0.760 / 0.931 |
+| best single signal ($c^*$ / $m^*$) | 0.583 / 0.841 | 0.643 / 0.807 |
+| logistic (linear, all features) | 0.671 / 0.857 | 0.748 / 0.924 |
+| 4-way accuracy / macro-F1 | 53.2% / 0.540 | 58.4% / 0.624 |
+| ECE | 0.021 | 0.026 |
+| `CRED-mix` overall EM | 51.7% | 54.4% |
+| `CRED-mix` EM on *resistance* | 55.7% | 71.9% |
 
 ## FAQ
 

@@ -11,13 +11,13 @@ def _pct(x):
     return f"{100 * x:.1f}%" if isinstance(x, (int, float)) else "  -  "
 
 
-def main(path=None):
-    path = path or (sys.argv[1] if len(sys.argv) > 1 else "results.json")
+def print_one(path):
     r = json.load(open(path, encoding="utf-8"))
 
+    print(f"\n{'=' * 72}")
     print(f"# Credence 实验结果  |  model={r['model']}  data={r['data_source']}  "
           f"N={r['n_samples']}")
-    print(f"\n四态分布: {r['class_distribution']}\n")
+    print(f"四态分布: {r['class_distribution']}\n")
 
     print("## 1. 学习估计器（test 集）")
     e = r["estimator_test"]
@@ -59,6 +59,18 @@ def main(path=None):
         c = r["cross_model"]
         print(f"\n## 6. 跨模型（{c['model']}）")
         print(f"  acc4={_pct(c['acc4'])}  auroc_c={c['auroc_c']:.3f}  ece={c['ece']:.3f}")
+
+
+def main():
+    import glob
+    files = sys.argv[1:]
+    if not files:
+        files = sorted(glob.glob("results_*.json"))
+    if not files:
+        print("未找到任何 results_*.json —— 请先运行 run_experiment.py")
+        return
+    for f in files:
+        print_one(f)
 
 
 if __name__ == "__main__":

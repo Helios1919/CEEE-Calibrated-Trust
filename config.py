@@ -22,8 +22,10 @@ MODEL_NAME = os.environ.get("CRED_MODEL", "Qwen/Qwen2.5-7B")
 # 数据源：facts = 内置 80 条事实（离线冒烟）；popqa = 真实 PopQA（正式对比）
 DATA_SOURCE = os.environ.get("CRED_DATA", "popqa")
 POPQA_SPLIT = "test"          # PopQA 官方只有 test 带 obj 标签
-POPQA_N = int(os.environ.get("CRED_N", "1500"))     # 采样条数（-1 = 全量）
-POPQA_MAX_PER_PROP = int(os.environ.get("CRED_MAX_PER_PROP", "150"))
+POPQA_N = int(os.environ.get("CRED_N", "3000"))     # 采样条数（-1 = 全量）
+POPQA_MAX_PER_PROP = int(os.environ.get("CRED_MAX_PER_PROP", "300"))
+# CounterFact（知识冲突专用：真实事实 vs 反事实）采样条数
+COUNTERFACT_N = int(os.environ.get("CRED_CF_N", "3000"))
 
 # 注意：torch<2.1 在 CUDA 上对 bfloat16 的 torch.triu 有 bug，此时用 float16 兜底。
 TORCH_DTYPE = os.environ.get("CRED_DTYPE", "bfloat16")
@@ -57,4 +59,4 @@ ADACAD_GAMMA = 1.0            # AdaCAD: α = (1−JSD)^γ
 # 消融类别（来自 features/extract.py 的 CATEGORIES，见下）
 # ---------------------------------------------------------------- 泛化
 HELD_OUT_RELATIONS = ["author"]   # facts 源时留出；popqa 源时按 prop 留出
-CROSS_MODEL = os.environ.get("CRED_CROSS_MODEL", "")   # 可选，如 Qwen/Qwen2.5-0.5B-Instruct
+CROSS_MODEL = os.environ.get("CRED_CROSS_MODEL", "Qwen/Qwen2.5-7B-Instruct")
