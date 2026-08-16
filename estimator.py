@@ -1,8 +1,9 @@
-"""可信度估计器：4 路 MLP (D→64→4) + 温度缩放 + 校准 / 判别指标。
+"""Credibility estimator: 4-way MLP (D->64->4) + temperature scaling + calibration
+/discrimination metrics.
 
-输出 P(state) ∈ {一致, 纠正, 抵抗, 双错}，派生：
-    p_c = P(correction) + P(agreement)   # 上下文正确的概率
-    p_m = P(resistance) + P(agreement)   # 记忆正确的概率
+Outputs P(state) over {double_wrong, resistance, correction, agreement}, deriving:
+    p_c = P(correction) + P(agreement)   # probability the context is correct
+    p_m = P(resistance) + P(agreement)   # probability the memory is correct
 """
 
 import numpy as np
@@ -11,11 +12,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, classification_report
 
-from config import STATE_NAMES
+from config import STATE_NAMES, T_GRID
 
 
 def ece(y_true, probs, n_bins=10):
-    """期望校准误差。y_true:int, probs:[N,4] softmax。"""
+    """Expected calibration error. y_true: int, probs: [N,4] softmax."""
     confs = probs.max(axis=1)
     preds = probs.argmax(axis=1)
     bins = np.linspace(0, 1, n_bins + 1)
@@ -30,7 +31,7 @@ def ece(y_true, probs, n_bins=10):
 
 
 def _auroc(y_bin, score):
-    """二分类 AUROC；y_bin 需含两类，否则返回 NaN。score 越大→越倾向 1。"""
+    """Binary AUROC; y_bin must contain both classes, else NaN. Larger score -> class 1."""
     y = np.asarray(y_bin)
     s = np.asarray(score)
     if len(np.unique(y)) < 2:
@@ -39,7 +40,7 @@ def _auroc(y_bin, score):
 
 
 def p_cm_from_probs(probs):
-    """4 路概率 → p_c, p_m。probs:[...,4]"""
+    """4-way probs -> p_c, p_m. probs: [...,4]"""
     p_c = probs[..., 2] + probs[..., 3]
     p_m = probs[..., 1] + probs[..., 3]
     return p_c, p_m
@@ -55,7 +56,7 @@ class Estimator(nn.Module):
         return self.net(x)
 
 
-# ---------------------------------------------------------------- 单次训练
+# ---------------------------------------------------------------- single fit
 def _fit_once(model, Xtr_t, ytr_t, Xva_t, yva_t, epochs, lr, seed, device):
     torch.manual_seed(seed)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -69,16 +70,16 @@ def _fit_once(model, Xtr_t, ytr_t, Xva_t, yva_t, epochs, lr, seed, device):
     with torch.no_grad():
         va_logits = model(Xva_t)
         best_T, best_nll = 1.0, float("inf")
-        for T in [0.5, 0.7, 1.0, 1.2, 1.5, 2.0, 3.0]:
+        for T in T_GRID:
             nll = F.cross_entropy(va_logits / T, yva_t).item()
             if nll < best_nll:
                 best_nll, best_T = nll, T
     return model, float(best_T)
 
 
-# ---------------------------------------------------------------- 指标
+# ---------------------------------------------------------------- metrics
 def evaluate_probs(probs, y, c_star, m_star):
-    """给定 [N,4] 概率与标签，返回完整指标 dict。c_star/m_star 为二值真标签。"""
+    """Return a full metric dict given [N,4] probs and labels. c_star/m_star are binary ground truth."""
     pred = probs.argmax(1)
     p_c, p_m = p_cm_from_probs(probs)
     return {
@@ -93,12 +94,12 @@ def evaluate_probs(probs, y, c_star, m_star):
     }
 
 
-# ---------------------------------------------------------------- 多种子训练 + 测试
+# ---------------------------------------------------------------- multi-seed training + testing
 def train_estimator(X, y, c_star, m_star, splits, epochs=300, lr=1e-3,
                     seeds=(0, 1, 2), device="cuda"):
-    """在固定 split 上训练，多随机种子重复，返回 (best_model, T, norm, 均值报告, 逐种子)。
+    """Train on a fixed split, repeat over seeds, return (best_model, T, norm, mean report, per-seed).
 
-    splits = {"tr": idx, "va": idx, "te": idx}（固定，保证各方法共用同一测试集）
+    splits = {"tr": idx, "va": idx, "te": idx} (fixed, so every method shares the same test set)
     """
     tr, va, te = splits["tr"], splits["va"], splits["te"]
     Xtr, Xva, Xte = X[tr], X[va], X[te]
@@ -127,14 +128,14 @@ def train_estimator(X, y, c_star, m_star, splits, epochs=300, lr=1e-3,
             best_val_acc = val_acc
             best = (m, T)
 
-    # 用 val 最优的模型在 test 上报告
+    # report on test with the model best on validation
     m, T = best
     with torch.no_grad():
         te_prob = F.softmax(m(Xte_t) / T, -1).cpu().numpy()
     rep = evaluate_probs(te_prob, yte, c_star[te], m_star[te])
     rep["n_test"] = int(len(yte))
 
-    # 多种子方差（同样在 test 上）
+    # per-seed variance (also on test)
     per_seed = []
     for sd_i in seeds:
         mm = Estimator(X.shape[1]).to(device)
@@ -147,15 +148,10 @@ def train_estimator(X, y, c_star, m_star, splits, epochs=300, lr=1e-3,
 
 
 def predict_probs(model, X, T, norm_params, device="cuda"):
-    """返回完整 [N,4] 概率（对归一化输入）。"""
+    """Return the full [N,4] probs (for normalized input)."""
     mu, sd = norm_params
     X_s = (X - mu) / sd
     X_t = torch.tensor(X_s, dtype=torch.float32).to(device)
     model.eval()
     with torch.no_grad():
         return F.softmax(model(X_t) / T, -1).cpu().numpy()
-
-
-def predict_cm(model, X, T, norm_params, device="cuda"):
-    """返回 p_c, p_m（对归一化输入）。"""
-    return p_cm_from_probs(predict_probs(model, X, T, norm_params, device))

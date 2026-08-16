@@ -1,13 +1,14 @@
-"""通用四态构建：ITEM 列表 → 带 model-aware 标签的样本（TriState-Bench 思路）。
+"""Common four-state builder: ITEM list -> model-aware labeled samples (TriState-Bench style).
 
-对每个 ITEM：
-  1. 封闭式前向（无上下文）贪心生成 → m*（模型记忆是否正确）。
-  2. 生成正确上下文（含 gold）与错误上下文（含 distractor）。
-  3. 每个 ITEM 产出 2 条样本：
-       c*=1（正确上下文）+ m* → 一致(3) 或 纠正(2)
-       c*=0（错误上下文）+ m* → 抵抗(1) 或 双错(0)
+For each ITEM:
+  1. Closed-book forward (no context) greedy generation -> m* (is memory correct).
+  2. Build the correct context (with gold) and the wrong context (with distractor).
+  3. Each ITEM yields 2 samples:
+       c*=1 (correct context) + m* -> agreement(3) or correction(2)
+       c*=0 (wrong context)   + m* -> resistance(1) or double_wrong(0)
 
-保存 JSONL（每条含 pri_prompt / ctx_prompt，供特征提取直接用），并打印四态分布。
+Saves JSONL (each line has pri_prompt / ctx_prompt for feature extraction) and prints
+the four-state distribution.
 """
 
 import json
@@ -36,7 +37,7 @@ def gen_closedbook(model, tok, prompt):
 
 
 def answer_correct(gen, gold):
-    """双向子串匹配：容忍多 token 答案的截断（如 gold="New York City"、gen="New York"）。"""
+    """Bidirectional substring match: tolerate multi-token truncation (e.g. gold="New York City", gen="New York")."""
     a, b = norm(gold), norm(gen)
     return (a in b) or (b in a)
 
@@ -78,12 +79,12 @@ def build_samples(model, tok, items, out_path, seed):
         for s in samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
-    print(f"[build] 共 {len(samples)} 条样本 -> {out_path}")
+    print(f"[build] {len(samples)} samples -> {out_path}")
     for st in range(4):
         print(f"  {STATE_NAMES[st]:<12} (state={st}): {counts[st]}")
     if counts[2] + counts[0] == 0:
-        print("  ⚠ correction/double_wrong 为 0：该模型对这批事实太强，"
-              "加冷门事实或换 base 模型（Qwen/Qwen2.5-7B）。")
+        print("  WARNING correction/double_wrong is 0: the model is too strong for this fact "
+              "batch; add rarer facts or use the base model (Qwen/Qwen2.5-7B).")
     return samples
 
 

@@ -13,6 +13,6 @@ mkdir -p logs
 
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 
-# 跑主实验（PopQA 正式对比）
+# Run the main experiment (PopQA comparison)
 python run_experiment.py --data popqa
 python results.py

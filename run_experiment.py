@@ -1,12 +1,14 @@
-"""主实验：端到端验证 Credence（学习到的校准可信度估计器 > 手工信号）。
+"""Main experiment: end-to-end validation of Credence (a learned, calibrated
+credibility estimator beats hand-crafted signals).
 
-流程（断点续跑：某阶段产物已存在即跳过，--force-* 重做）：
-  build → extract → split → train(多种子) → 判别基线 → 解码对比 → 消融 → 泛化 → 跨模型 → 汇总
+Pipeline (resumable: a stage is skipped when its artifact exists, --force-* redoes it):
+  build -> extract -> split -> train(multi-seed) -> discrimination baselines ->
+  decode comparison -> ablation -> generalization -> cross-model -> summarize
 
-用法：
-  python run_experiment.py --data facts                 # 离线冒烟（80 条内置事实）
-  python run_experiment.py --data popqa                 # 正式对比（真实 PopQA）
-  python run_experiment.py --skip-ablation --skip-generalization   # 快速版
+Usage:
+  python run_experiment.py --data facts                 # offline smoke (80 built-in facts)
+  python run_experiment.py --data popqa                 # main comparison (real PopQA)
+  python run_experiment.py --skip-ablation --skip-generalization   # quick run
 """
 
 import argparse
@@ -26,9 +28,9 @@ from config import STATE_NAMES
 from data import facts, popqa, counterfact
 from data.build import build_samples, load_model
 from features.extract import CATEGORIES, FEATURE_NAMES, Forwarder, extract_all
-from estimator import (evaluate_probs, predict_cm, predict_probs, train_estimator)
-from baselines import (best_single_signal, logistic_auc, run_decoders,
-                       single_signal_aurocs)
+from estimator import (evaluate_probs, p_cm_from_probs, predict_probs, train_estimator)
+from baselines import (best_single_signal, evaluate_abstention, logistic_auc,
+                       run_decoders, single_signal_aurocs, tune_baseline_params)
 
 
 def setup_logging():
@@ -66,12 +68,12 @@ def _split(a, y_a, test_size, seed):
         return train_test_split(a, test_size=test_size, random_state=seed,
                                 stratify=y_a)
     except ValueError:
-        # 某类样本过少导致 stratified 失败时，退化为随机切分
+        # fall back to random split when a class is too rare for stratification
         return train_test_split(a, test_size=test_size, random_state=seed)
 
 
 def group_ids(samples):
-    """为每个样本赋 (relation, subject) 组 id，供无泄漏分组切分。"""
+    """Assign each sample a (relation, subject) group id for leakage-free grouping."""
     keys = {}
     ids = []
     for s in samples:
@@ -83,18 +85,21 @@ def group_ids(samples):
 
 
 def make_group_split(groups, group_label, seed=0):
-    """按组切分 train/val/test：同一 subject 的两条变体（正确/错误上下文）永不跨 split。
+    """Split train/val/test by group: a subject's two variants (correct/wrong context)
+    never cross a split boundary.
 
-    数据构建阶段每个 subject 产出 c*=1 与 c*=0 两条样本，且共享 question/上下文文本
-    与相同的 m_star。若按样本随机切分，模型可在 train 上"背下"某 subject 的 m*，
-    再凭相同文本在 test 上认出同一 subject 直接猜中 m*，导致标签泄漏、指标虚高。
+    The build stage produces two samples per subject (c*=1 and c*=0) that share the
+    question/context text and the same m*. A sample-level random split would let the
+    model "memorize" a subject's m* on train and then, given the same text on test,
+    recognize the subject and guess m* directly — label leakage that inflates metrics.
 
-    groups: [N] 组 id（group_ids() 产出）；group_label: [N] 组级标签（用 m_star 分层，
-    同一组内 m_star 恒等，故组级分层等价于样本级分层且无泄漏）。
-    返回 {"tr","va","te"} 的样本索引（0..N-1）。
+    groups: [N] group ids (from group_ids()); group_label: [N] group-level labels
+    (stratified by m*; m* is constant within a group, so group-level stratification
+    equals sample-level stratification with no leakage).
+    Returns sample indices (0..N-1) for {"tr","va","te"}.
     """
     uniq_g, first_idx = np.unique(groups, return_index=True)
-    g_lab = np.asarray(group_label)[first_idx]          # 每组取一条标签（组内恒等）
+    g_lab = np.asarray(group_label)[first_idx]          # one label per group (constant within)
     g_arr = np.arange(len(uniq_g))
 
     g_tr, g_rest = _split(g_arr, g_lab, 1 - config.TRAIN_FRAC, seed)
@@ -138,23 +143,24 @@ def main():
     args = ap.parse_args()
     config.MODEL_NAME = args.model
 
-    # 按数据源隔离产物路径：facts/popqa 各自独立，避免 --data 切换时复用/覆盖彼此的数据
+    # Isolate artifact paths by data source: facts/popqa are independent, avoiding
+    # reuse/overwrite of each other's data when --data switches.
     tag = args.data
     config.DATA_PATH = config.ROOT / f"data_{tag}.jsonl"
     config.FEATURE_PATH = config.ROOT / f"features_{tag}.npz"
     config.TOPK_PATH = config.ROOT / f"topk_logits_{tag}.pkl"
     config.ESTIMATOR_PATH = config.ROOT / f"estimator_{tag}.pt"
-    # 结果按数据源隔离：results_{tag}.json，避免多数据源互相覆盖
+    # Results are isolated per data source too: results_{tag}.json, avoiding overwrite.
     config.RESULT_PATH = config.ROOT / f"results_{tag}.json"
 
     logf = setup_logging()
-    logging.info(f"日志: {logf} | 模型: {args.model} | 数据源: {args.data}")
+    logging.info(f"log: {logf} | model: {args.model} | data source: {args.data}")
 
     # ------------------------------------------------ 1 build
     if args.force_build or not config.DATA_PATH.exists():
-        logging.info("==> [1/8] 构建数据集")
+        logging.info("==> [1/8] build dataset")
         items = get_items(args.data)
-        logging.info(f"  ITEM 数: {len(items)}")
+        logging.info(f"  ITEM count: {len(items)}")
         model, tok = load_model(args.model)
         build_samples(model, tok, items, config.DATA_PATH, config.SEED)
         del model, tok
@@ -165,11 +171,11 @@ def main():
     c_star = np.array([s["c_star"] for s in samples])
     m_star = np.array([s["m_star"] for s in samples])
     dist = {STATE_NAMES[i]: int((y == i).sum()) for i in range(4)}
-    logging.info(f"  样本 {len(samples)} 条，分布 {dist}")
+    logging.info(f"  {len(samples)} samples, distribution {dist}")
 
     # ------------------------------------------------ 2 extract
     if args.force_extract or not (config.FEATURE_PATH.exists() and config.TOPK_PATH.exists()):
-        logging.info("==> [2/8] 提取特征（两次前向）")
+        logging.info("==> [2/8] extract features (two forward passes)")
         model, tok = load_model(args.model)
         fwd = Forwarder(model, tok)
         X, metas, topks = extract_all(fwd, samples, top_k=config.TOP_K)
@@ -180,20 +186,20 @@ def main():
         del model, tok
         torch.cuda.empty_cache()
     else:
-        logging.info("==> [2/8] 载入缓存特征")
+        logging.info("==> [2/8] load cached features")
         X = np.load(config.FEATURE_PATH)["X"]
         with open(config.TOPK_PATH, "rb") as f:
             topks = pickle.load(f)
-    logging.info(f"  特征 X: {X.shape}（{len(FEATURE_NAMES)} 维）")
+    logging.info(f"  features X: {X.shape} ({len(FEATURE_NAMES)} dims)")
 
     # ------------------------------------------------ 3 split
-    # 无泄漏分组切分：同一 subject 的正确/错误上下文两条变体绑定在同一集合。
+    # Leakage-free grouped split: a subject's correct/wrong context variants stay together.
     gid = group_ids(samples)
     splits = make_group_split(gid, m_star, seed=config.SEED)
     te = splits["te"]
 
     # ------------------------------------------------ 4 train
-    logging.info("==> [3/8] 训练估计器（多种子）")
+    logging.info("==> [3/8] train estimator (multi-seed)")
     model_est, T, norm, rep, per_seed = train_estimator(
         X, y, c_star, m_star, splits, epochs=config.EPOCHS, lr=config.LR,
         seeds=config.SEEDS, device="cuda")
@@ -206,36 +212,54 @@ def main():
                       "std": mean_std([r[k] for r in per_seed])[1]}
                   for k in ["acc4", "f1_macro", "ece", "auroc_c", "auroc_m"]}
 
-    p_c_te, p_m_te = predict_cm(model_est, X[te], T, norm, "cuda")
+    probs_te = predict_probs(model_est, X[te], T, norm, "cuda")
+    p_c_te, p_m_te = p_cm_from_probs(probs_te)
 
-    # ------------------------------------------------ 5 判别基线
-    logging.info("==> [4/8] 单信号 vs 学习判别（AUROC，阈值无关）")
+    # ------------------------------------------------ 5 discrimination baselines
+    logging.info("==> [4/8] single signal vs learned discrimination (AUROC, threshold-free)")
     aurocs = single_signal_aurocs(
         X[splits["tr"]], X[te], c_star[splits["tr"]], c_star[te],
         m_star[splits["tr"]], m_star[te])
     bcn, bca, bmn, bma = best_single_signal(aurocs)
     log_c = logistic_auc(X[splits["tr"]], X[te], c_star[splits["tr"]], c_star[te])
     log_m = logistic_auc(X[splits["tr"]], X[te], m_star[splits["tr"]], m_star[te])
-    logging.info(f"  最佳单信号  c*: {bcn}={bca:.3f}   m*: {bmn}={bma:.3f}")
-    logging.info(f"  logistic(全特征线性)  c*={log_c:.3f}  m*={log_m:.3f}")
-    logging.info(f"  MLP(全特征非线性)     c*={rep['auroc_c']:.3f}  m*={rep['auroc_m']:.3f}")
+    logging.info(f"  best single signal  c*: {bcn}={bca:.3f}   m*: {bmn}={bma:.3f}")
+    logging.info(f"  logistic(all features, linear)  c*={log_c:.3f}  m*={log_m:.3f}")
+    logging.info(f"  MLP(all features, nonlinear)    c*={rep['auroc_c']:.3f}  m*={rep['auroc_m']:.3f}")
 
-    # ------------------------------------------------ 6 解码
+    # ------------------------------------------------ 6 decoding
     decoders = None
+    base_params = None
+    abstain = None
     if not args.skip_decoder:
-        logging.info("==> [5/8] 下游解码对比（单 token EM）")
-        # CoRect 门控阈值在训练集上估计（避免测试集泄漏）
-        corect_thresh = float(np.median(X[splits["tr"]][:, 9]))
+        logging.info("==> [5/8] downstream decoding comparison (single-token EM)")
+        # Baseline hyperparams are searched on validation (matching the learned side's
+        # tuning budget, so the comparison is not unfair)
+        base_params = tune_baseline_params(
+            [topks[i] for i in splits["va"]], X[splits["va"]])
+        logging.info(f"  baseline tuning (val): CAD_alpha={base_params['cad_alpha']:.2f} "
+                     f"AdaCAD_theta={base_params['adacad_theta']:.2f} "
+                     f"AdaCAD_gamma={base_params['adacad_gamma']:.2f} "
+                     f"CoRect_thresh={base_params['corect_thresh']:.3f}")
         decoders = run_decoders([topks[i] for i in te], X[te], c_star[te], m_star[te],
-                                p_c_te, p_m_te, corect_thresh=corect_thresh)
+                                p_c_te, p_m_te,
+                                cad_alpha=base_params["cad_alpha"],
+                                adacad_theta=base_params["adacad_theta"],
+                                adacad_gamma=base_params["adacad_gamma"],
+                                corect_thresh=base_params["corect_thresh"])
         for name, d in decoders.items():
-            logging.info(f"  {name:<12} EM={d['em']:.3f} 纠正={d['em_correction']:.3f} "
-                         f"抵抗={d['em_resistance']:.3f}")
+            logging.info(f"  {name:<22} EM={d['em']:.3f} corr={d['em_correction']:.3f} "
+                         f"resist={d['em_resistance']:.3f}")
 
-    # ------------------------------------------------ 7 消融
+        abstain = evaluate_abstention([topks[i] for i in te], probs_te)
+        logging.info(f"  abstention (selective prediction) AURC={abstain['aurc']:.3f} (lower is better)")
+        for th, cov, em in zip(abstain["thresholds"], abstain["coverage"], abstain["em"]):
+            logging.info(f"    threshold P(dw)>={th:.2f} coverage={cov:.3f} answeredEM={em:.3f}")
+
+    # ------------------------------------------------ 7 ablation
     ablation = None
     if not args.skip_ablation:
-        logging.info("==> [6/8] 特征分组消融")
+        logging.info("==> [6/8] feature-group ablation")
         ablation = {}
         for cat, cols in CATEGORIES.items():
             mask = np.ones(X.shape[1], dtype=bool)
@@ -247,17 +271,17 @@ def main():
                 lr=config.LR, seeds=config.SEEDS, device="cuda")
             ablation[cat] = {"acc4": repm["acc4"], "auroc_c": repm["auroc_c"],
                              "ece": repm["ece"]}
-            logging.info(f"  去掉 {cat:<6}: acc4={repm['acc4']:.3f} auroc_c={repm['auroc_c']:.3f}")
+            logging.info(f"  drop {cat:<6}: acc4={repm['acc4']:.3f} auroc_c={repm['auroc_c']:.3f}")
 
-    # ------------------------------------------------ 8 泛化
+    # ------------------------------------------------ 8 generalization
     gen = None
     if not args.skip_generalization:
-        logging.info("==> [7/8] 泛化（held-out relation）")
+        logging.info("==> [7/8] generalization (held-out relation)")
         rels = np.array([s["relation"] for s in samples])
         if args.data == "facts":
             held = set(config.HELD_OUT_RELATIONS)
         else:
-            held = set(sorted(set(rels))[::5])          # 每 5 个 prop 留 1 个
+            held = set(sorted(set(rels))[::5])          # hold out every 5th prop
         te_idx = np.array([i for i, r in enumerate(rels) if r in held])
         rest_idx = np.array([i for i, r in enumerate(rels) if r not in held])
         if len(te_idx) and len(rest_idx):
@@ -271,10 +295,10 @@ def main():
             logging.info(f"  held-out {sorted(held)}: acc4={grep['acc4']:.3f} "
                          f"auroc_c={grep['auroc_c']:.3f} (n={grep['n_test']})")
 
-    # ------------------------------------------------ 9 跨模型
+    # ------------------------------------------------ 9 cross-model
     cross = None
     if config.CROSS_MODEL:
-        logging.info(f"==> [8/8] 跨模型泛化 -> {config.CROSS_MODEL}")
+        logging.info(f"==> [8/8] cross-model generalization -> {config.CROSS_MODEL}")
         model2, tok2 = load_model(config.CROSS_MODEL)
         fwd2 = Forwarder(model2, tok2)
         X2, _, _ = extract_all(fwd2, samples, top_k=config.TOP_K)
@@ -288,7 +312,7 @@ def main():
         del model2, tok2
         torch.cuda.empty_cache()
 
-    # ------------------------------------------------ 汇总保存
+    # ------------------------------------------------ summarize & save
     results = {
         "model": args.model,
         "data_source": args.data,
@@ -301,15 +325,17 @@ def main():
         "best_single_signal": {"c": [bcn, bca], "m": [bmn, bma]},
         "logistic_linear": {"auroc_c": log_c, "auroc_m": log_m},
         "decoders": decoders,
+        "baseline_params": base_params,
+        "abstention": abstain,
         "ablation": ablation,
         "generalization": gen,
         "cross_model": cross,
     }
     with open(config.RESULT_PATH, "w", encoding="utf-8") as f:
         json.dump(sanitize(results), f, ensure_ascii=False, indent=2)
-    logging.info(f"\n完成 -> {config.RESULT_PATH}  |  权重 -> {config.ESTIMATOR_PATH}")
-    logging.info("结论判据：auroc_c(MLP) 应 > 最佳单信号 & logistic；ECE 应 < 0.1；")
-    logging.info("         下游 EM：CRED-* 应 ≥ ARR/AdaCAD/CoRect 手工门控。")
+    logging.info(f"\ndone -> {config.RESULT_PATH}  |  weights -> {config.ESTIMATOR_PATH}")
+    logging.info("verdict: AUROC(c*)(MLP) should beat best single signal & logistic; ECE < 0.1;")
+    logging.info("         downstream EM: CRED-* should be >= ARR/AdaCAD/CoRect hand gates.")
 
 
 if __name__ == "__main__":

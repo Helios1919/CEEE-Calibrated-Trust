@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 完整重跑：popqa + counterfact 两个数据源，最后打印汇总。
-# 用法：nohup bash run_all.sh > logs/run_all.out 2>&1 &
+# Full re-run: both popqa and counterfact datasets, then print the summary.
+# Usage: nohup bash run_all.sh > logs/run_all.out 2>&1 &
 set -uo pipefail
 cd "$(dirname "$0")"
 

@@ -10,7 +10,7 @@ data*.jsonl
 features*.npz
 estimator*.pt
 topk_logits*.pkl
-results.json
+results*.json
 
 # Logs & run output
 logs/

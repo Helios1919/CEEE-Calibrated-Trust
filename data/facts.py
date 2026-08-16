@@ -1,14 +1,15 @@
-"""内置事实池（离线冒烟 / sanity）。产出 ITEM 列表交给 data/build.py 建四态。
+"""Built-in fact pool (offline smoke / sanity). Produces the ITEM list handed to
+data/build.py for four-state construction.
 
-ITEM 统一 schema（任何数据集只需产出它即可接入）：
+Unified ITEM schema (any dataset only needs to produce this to plug in):
     {
-      "relation": str,             # 分组键：干扰项从同 relation 的其它 gold 抽
+      "relation": str,             # grouping key: distractors are drawn from other golds of the same relation
       "subject":  str,
-      "gold":     str,             # 正确答案
-      "distractor": str,           # 同类型错误答案（已抽好）
+      "gold":     str,             # the correct answer
+      "distractor": str,           # a same-type wrong answer (pre-drawn)
       "question": str,
-      "correct_statement": str,    # 含 gold 的正确上下文陈述
-      "wrong_statement":   str,    # 含 distractor 的错误上下文陈述
+      "correct_statement": str,    # correct context statement containing gold
+      "wrong_statement":   str,    # wrong context statement containing distractor
     }
 """
 
@@ -33,7 +34,7 @@ TEMPLATES = {
     },
 }
 
-# 每类混入冷门事实，保证 7B 会答错 → correction / double_wrong 非空。
+# Mix in rarer facts per category so the 7B model errs -> correction / double_wrong non-empty.
 FACTS = {
     "capital": [
         ("France", "Paris"), ("Germany", "Berlin"), ("Japan", "Tokyo"),
@@ -82,7 +83,7 @@ FACTS = {
 
 
 def make_items(seed=0):
-    """把 FACTS 展开成 ITEM 列表，干扰项同 relation 随机抽（语料替换）。"""
+    """Expand FACTS into an ITEM list; distractors are randomly drawn from the same relation (corpus substitution)."""
     random.seed(seed)
     items = []
     for rel, triples in FACTS.items():
