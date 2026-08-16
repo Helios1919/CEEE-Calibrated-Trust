@@ -6,9 +6,9 @@ Pipeline (resumable: a stage is skipped when its artifact exists, --force-* redo
   decode comparison -> ablation -> generalization -> cross-model -> summarize
 
 Usage:
-  python run_experiment.py --data facts                 # offline smoke (80 built-in facts)
-  python run_experiment.py --data popqa                 # main comparison (real PopQA)
-  python run_experiment.py --skip-ablation --skip-generalization   # quick run
+  python scripts/run_experiment.py --data facts                 # offline smoke (80 built-in facts)
+  python scripts/run_experiment.py --data popqa                 # main comparison (real PopQA)
+  python scripts/run_experiment.py --skip-ablation --skip-generalization   # quick run
 """
 
 import argparse
@@ -18,6 +18,9 @@ import math
 import pickle
 import sys
 from pathlib import Path
+
+# Make src/ importable regardless of the working directory (entry point lives under scripts/).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import numpy as np
 import torch
@@ -143,15 +146,15 @@ def main():
     args = ap.parse_args()
     config.MODEL_NAME = args.model
 
-    # Isolate artifact paths by data source: facts/popqa are independent, avoiding
-    # reuse/overwrite of each other's data when --data switches.
+    # Per-dataset artifacts live under artifacts/<tag>/ (isolated per data source).
     tag = args.data
-    config.DATA_PATH = config.ROOT / f"data_{tag}.jsonl"
-    config.FEATURE_PATH = config.ROOT / f"features_{tag}.npz"
-    config.TOPK_PATH = config.ROOT / f"topk_logits_{tag}.pkl"
-    config.ESTIMATOR_PATH = config.ROOT / f"estimator_{tag}.pt"
-    # Results are isolated per data source too: results_{tag}.json, avoiding overwrite.
-    config.RESULT_PATH = config.ROOT / f"results_{tag}.json"
+    adir = config.ARTIFACT_DIR / tag
+    adir.mkdir(parents=True, exist_ok=True)
+    config.DATA_PATH = adir / "data.jsonl"
+    config.FEATURE_PATH = adir / "features.npz"
+    config.TOPK_PATH = adir / "topk_logits.pkl"
+    config.ESTIMATOR_PATH = adir / "estimator.pt"
+    config.RESULT_PATH = adir / "results.json"
 
     logf = setup_logging()
     logging.info(f"log: {logf} | model: {args.model} | data source: {args.data}")

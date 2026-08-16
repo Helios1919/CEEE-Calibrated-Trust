@@ -8,11 +8,11 @@
 #SBATCH --error=logs/slurm_%j.err
 
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 mkdir -p logs
 
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 
 # Run the main experiment (PopQA comparison)
-python run_experiment.py --data popqa
-python results.py
+python scripts/run_experiment.py --data popqa
+python scripts/results.py

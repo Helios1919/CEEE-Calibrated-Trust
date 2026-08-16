@@ -64,23 +64,26 @@ p_m   = P(resistance)  + P(agreement)  # memory is correct
 ## Repository layout
 
 ```text
-config.py            global config (override via CRED_MODEL / CRED_DATA / CRED_N /
-                     CRED_SEED / CRED_CROSS_MODEL env vars)
-run_experiment.py    end-to-end pipeline: build → extract → split → train →
-                     baselines → decode → ablation → generalization → cross-model
-results.py           prints a readable summary for every results_*.json
-baselines.py         single-signal discriminators + downstream decoders
-                     (greedy / CAD / ARR / AdaCAD / CoRect / CRED-hard / CRED-mix)
-estimator.py         4-way MLP + temperature scaling + AUROC/ECE metrics
-data/build.py        builds four-state labels from ITEM schemas
-data/facts.py        built-in 80-item offline smoke set
-data/popqa.py        real PopQA loader (corpus-substituted contexts)
-data/counterfact.py  CounterFact loader (corpus-substituted contexts)
-features/extract.py  S1–S14 signal extraction (two forward passes + hooks + LogitLens)
-signal-bank.md       detailed specification of every signal (formulas + pseudocode)
-run.sh               one-shot entrypoint
-slurm.sh             cluster (SLURM) template
-requirements.txt     Python dependencies
+src/                    core library (importable as top-level modules)
+  config.py             global config (CRED_MODEL / CRED_DATA / CRED_N / CRED_SEED ...)
+  estimator.py          4-way MLP + temperature scaling + AUROC/ECE metrics
+  baselines.py          single-signal discriminators + downstream decoders
+                        (greedy / CAD / ARR / AdaCAD / CoRect / CRED-hard / CRED-mix)
+  data/                 ITEM schema loaders -> four-state labels
+    build.py            builds four-state labels (closed-book m* + context c*)
+    facts.py            built-in 80-item offline smoke set
+    popqa.py            real PopQA loader (corpus-substituted contexts)
+    counterfact.py      CounterFact loader (corpus-substituted contexts)
+  features/             signal extraction
+    extract.py          S1–S14 signals (two forward passes + hooks + LogitLens)
+scripts/                entry points
+  run_experiment.py     end-to-end pipeline (build → extract → split → train → ...)
+  results.py            readable summary for every artifacts/*/results.json
+  run.sh / run_all.sh   one-shot / full re-run
+  slurm.sh              cluster (SLURM) template
+docs/                   design docs (signal-bank.md) and drafts (plan.md, paper.tex)
+artifacts/              per-dataset run outputs (git-ignored)
+requirements.txt        Python dependencies
 ```
 
 ## Quick start
@@ -89,13 +92,13 @@ requirements.txt     Python dependencies
 pip install -r requirements.txt
 
 # 1) Offline smoke test (80 built-in facts, no network, a few minutes)
-bash run.sh --data facts
+bash scripts/run.sh --data facts
 
-# 2) Full comparison (real PopQA, 3000 items by default)
-bash run.sh --data popqa
+# 2) Full comparison (real PopQA, all items by default)
+bash scripts/run.sh --data popqa
 
-# 3) Second full dataset (CounterFact, 3000 items)
-bash run.sh --data counterfact
+# 3) Second full dataset (CounterFact, all items)
+bash scripts/run.sh --data counterfact
 ```
 
 ### Command-line flags
@@ -128,12 +131,12 @@ pip install -U pip && pip install -r requirements.txt
 export HF_HOME=/data/hf_cache
 huggingface-cli download Qwen/Qwen2.5-7B --local-dir /data/hf_cache/Qwen/Qwen2.5-7B
 
-nohup bash run.sh --data popqa > run.out 2>&1 &
+nohup bash scripts/run.sh --data popqa > run.out 2>&1 &
 tail -f logs/run_*.log          # progress
-python results.py               # summary table
+python scripts/results.py       # summary table
 ```
 
-On a cluster, use `sbatch slurm.sh`.
+On a cluster, use `sbatch scripts/slurm.sh`.
 
 ## Representative results
 
@@ -163,7 +166,7 @@ seeds 0/1/2 for stability).
 - **Out of GPU memory.** Use a smaller model via `CRED_MODEL=...` or `--model`.
   7B in bf16 needs ~15 GB.
 - **Changing model / data.** Use `--model` / `--data`; a new dataset only needs to
-  produce the ITEM schema (see `data/facts.py`).
+  produce the ITEM schema (see `src/data/facts.py`).
 
 ## Roadmap
 

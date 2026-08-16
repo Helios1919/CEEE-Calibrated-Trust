@@ -1,6 +1,6 @@
 """Read results.json and print a readable summary table (after the main experiment).
 
-Usage: python results.py [results.json]
+Usage: python scripts/results.py [results.json]
 """
 
 import json
@@ -77,9 +77,9 @@ def main():
     import glob
     files = sys.argv[1:]
     if not files:
-        files = sorted(glob.glob("results_*.json"))
+        files = sorted(glob.glob("artifacts/*/results.json"))
     if not files:
-        print("no results_*.json found -- run run_experiment.py first")
+        print("no artifacts/*/results.json found -- run run_experiment.py first")
         return
     for f in files:
         print_one(f)

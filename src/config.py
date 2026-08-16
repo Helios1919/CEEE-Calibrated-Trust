@@ -14,7 +14,7 @@ Derived credibility:
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent   # project root (config.py lives under src/)
 
 STATE_NAMES = {0: "double_wrong", 1: "resistance", 2: "correction", 3: "agreement"}
 STATE2ID = {v: k for k, v in STATE_NAMES.items()}
@@ -35,11 +35,12 @@ MAX_NEW_TOKENS = 12           # max tokens for closed-book m* label generation
 TOP_K = 100                   # cache top-K logits of z_pri/z_ctx for downstream decoding
 
 # ---------------------------------------------------------------- paths
-DATA_PATH = ROOT / "data.jsonl"
-FEATURE_PATH = ROOT / "features.npz"
-TOPK_PATH = ROOT / "topk_logits.pkl"
-ESTIMATOR_PATH = ROOT / "estimator.pt"
-RESULT_PATH = ROOT / "results.json"
+ARTIFACT_DIR = ROOT / "artifacts"   # per-dataset run artifacts (data/features/estimator/results)
+DATA_PATH = ARTIFACT_DIR / "data.jsonl"
+FEATURE_PATH = ARTIFACT_DIR / "features.npz"
+TOPK_PATH = ARTIFACT_DIR / "topk_logits.pkl"
+ESTIMATOR_PATH = ARTIFACT_DIR / "estimator.pt"
+RESULT_PATH = ARTIFACT_DIR / "results.json"
 LOG_DIR = ROOT / "logs"
 
 # ---------------------------------------------------------------- split / training

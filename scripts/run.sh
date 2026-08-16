@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run the full experiment on an A100 with a single command. Usage:
-#   bash run.sh                          # main comparison (PopQA)
-#   bash run.sh --data facts             # offline smoke test
-#   bash run.sh --skip-ablation --skip-generalization   # quick run
+#   bash scripts/run.sh                          # main comparison (PopQA)
+#   bash scripts/run.sh --data facts             # offline smoke test
+#   bash scripts/run.sh --skip-ablation --skip-generalization   # quick run
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Model cache dir (point to a mounted data disk to avoid re-downloading)
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
@@ -21,7 +21,7 @@ if torch.cuda.is_available():
 PY
 
 echo "== run main experiment =="
-python run_experiment.py "$@"
+python scripts/run_experiment.py "$@"
 
 echo "== result summary =="
-python results.py
+python scripts/results.py
