@@ -21,8 +21,9 @@ the core failure mode of retrieval-augmented generation. Existing routing method
 3. **Ignore the *double-wrong* case** — context *and* memory are both wrong.
 
 Credence addresses all three by framing trust estimation as a *supervised learning*
-problem over a *signal bank* of $17$ internal signals drawn from the logit, hidden,
-and attention layers, fused by a compact MLP into four states.
+problem over a *signal bank* of $14$ internal signals (expanded into a $17$-dim
+feature vector) drawn from the logit, hidden, and attention layers, fused by a
+compact MLP into four states.
 
 ## Four-state formulation
 

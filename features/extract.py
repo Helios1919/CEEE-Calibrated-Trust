@@ -12,6 +12,8 @@ S15（ProbeRAG 探针）与 S17–S19（外部检索置信度/时效/权威）�
   pri = 仅问题（无上下文），ctx = 上下文 + 问题。
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -105,7 +107,7 @@ def logit_features(pri_logits_last, ctx_logits_last):
     p_ctx = _dist(ctx_logits_last)
     g = p_ctx.max().item() - p_pri.max().item()                     # S1 概率 gap
     h_diff = _entropy(p_ctx) - _entropy(p_pri)                      # S2 熵差
-    j = _jsd(p_ctx, p_pri)                                          # S3 JSD
+    j = _jsd(p_ctx, p_pri) / math.log(2)                            # S3 JSD（归一化到 [0,1]，对齐 signal-bank 的 JSD/log2）
     same = int(p_ctx.argmax() == p_pri.argmax())                    # S4 argmax 一致
     topk = 5
     overlap = len(set(p_ctx.topk(topk).indices.tolist()) &
