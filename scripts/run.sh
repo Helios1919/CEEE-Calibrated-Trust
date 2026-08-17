@@ -2,7 +2,6 @@
 # Run the full experiment on an A100 with a single command. Usage:
 #   bash scripts/run.sh                          # main comparison (PopQA)
 #   bash scripts/run.sh --data facts             # offline smoke test
-#   bash scripts/run.sh --skip-ablation --skip-generalization   # quick run
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -23,5 +22,5 @@ PY
 echo "== run main experiment =="
 python scripts/run_experiment.py "$@"
 
-echo "== result summary =="
-python scripts/results.py
+echo "== metrics =="
+python scripts/analyze.py "$@"

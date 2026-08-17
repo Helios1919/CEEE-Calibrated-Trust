@@ -15,4 +15,4 @@ export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 
 # Run the main experiment (PopQA comparison)
 python scripts/run_experiment.py --data popqa
-python scripts/results.py
+python scripts/analyze.py --data popqa

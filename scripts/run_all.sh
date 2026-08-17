@@ -16,6 +16,7 @@ echo "==== [counterfact] start $(date) ===="
 python scripts/run_experiment.py --data counterfact 2>&1
 echo "==== [counterfact] end $(date) ===="
 
-echo "==== [results] start $(date) ===="
-python scripts/results.py 2>&1
+echo "==== [analyze] start $(date) ===="
+python scripts/analyze.py --data popqa 2>&1
+python scripts/analyze.py --data counterfact 2>&1
 echo "==== ALL DONE $(date) ===="

@@ -40,7 +40,6 @@ DATA_PATH = ARTIFACT_DIR / "data.jsonl"
 FEATURE_PATH = ARTIFACT_DIR / "features.npz"
 TOPK_PATH = ARTIFACT_DIR / "topk_logits.pkl"
 ESTIMATOR_PATH = ARTIFACT_DIR / "estimator.pt"
-RESULT_PATH = ARTIFACT_DIR / "results.json"
 LOG_DIR = ROOT / "logs"
 
 # ---------------------------------------------------------------- split / training
@@ -48,7 +47,7 @@ SEED = int(os.environ.get("CRED_SEED", "0"))
 SEEDS = [0, 1, 2]              # multiple estimator seeds (report mean±std)
 TRAIN_FRAC = 0.6
 VAL_FRAC = 0.2
-TEST_FRAC = 0.2               # all baselines/estimators share the same test set
+TEST_FRAC = 0.2               # all methods share the same test set
 
 HIDDEN_DIM = 256            # estimator hidden width
 HIDDEN_LAYERS = 2           # number of hidden layers (d -> h x L -> 4)
@@ -60,15 +59,3 @@ EARLY_STOP_PATIENCE = 30    # stop if val accuracy does not improve for this man
 
 # Temperature-scaling candidate grid (selected on validation by NLL)
 T_GRID = [0.5, 0.7, 1.0, 1.2, 1.5, 2.0, 3.0]
-# Abstention (selective prediction): abstain score = P(double-wrong), refuse above threshold
-ABSTAIN_THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
-
-# ---------------------------------------------------------------- decoder hyperparams (from the papers)
-CAD_ALPHA = 1.0               # CAD: q = (1+alpha) z_ctx - alpha z_pri
-ADACAD_THETA = 0.7            # AdaCAD: JSD>theta is treated as conflict
-ADACAD_GAMMA = 1.0            # AdaCAD: alpha = (1-JSD)^gamma
-
-# Ablation categories (see CATEGORIES in features/extract.py)
-# ---------------------------------------------------------------- generalization
-HELD_OUT_RELATIONS = ["author"]   # held out for facts source; popqa holds out by prop
-CROSS_MODEL = os.environ.get("CRED_CROSS_MODEL", "Qwen/Qwen2.5-7B-Instruct")
