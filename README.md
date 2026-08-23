@@ -1,175 +1,133 @@
-# Credence — A Learned, Calibrated Trustworthiness Estimator for RAG
+# Credence
 
-**Credence** replaces hand-crafted trust heuristics with a small, *learned*, and
-*calibrated* estimator that scores whether the retrieved context ($c^*$) and the
-model's parametric memory ($m^*$) are correct. Given a question–context pair, it
-outputs two probabilities:
+> **Current decision: Stage 1 = PIVOT.** The active research program is Stage 2: separating retrieval availability, retained evidence sufficiency, model-conditioned utilization, protocol-distributed closed-book answerability, and downstream action risk.
 
-- $p_c = P(\text{context is correct})$
-- $p_m = P(\text{memory is correct})$
+## Research status
 
-which are then used to route RAG decoding instead of manually designed gates.
+Stage 1 is complete with a **PIVOT** decision. The active research plan is documented in `docs/stage-2-plan.md`, and its executable experiment contracts are in `docs/experiment-registry.md`. The next registered experiment is **S2-E1**, a CPU-compatible observability audit over the existing SciFact artifacts. It must finish before schema v2 is frozen or any Stage-2 model comparison begins.
 
-## Motivation
+## Stage-1 question and result
 
-Knowledge conflicts between a model's parametric memory and retrieved context are
-the core failure mode of retrieval-augmented generation. Existing routing methods
-(CAD, ARR, AdaCAD, CoRect, …) share three weaknesses:
+Credence began as a Stage-1 research project about **joint source-state estimation for risk-aware retrieval-augmented generation**. Its central question was deliberately narrow:
 
-1. **Uncalibrated** — their scores are not usable probabilities.
-2. **Single signal** — each method relies on one hand-picked heuristic.
-3. **Ignore the *double-wrong* case** — context *and* memory are both wrong.
+> When retrieved evidence and a model's closed-book capability can both fail, does estimating their joint state enable safer decisions than scalar confidence or independently estimated marginals?
 
-Credence addresses all three by framing trust estimation as a *supervised learning*
-problem over a *signal bank* of $14$ internal signals (expanded into a $17$-dim
-feature vector) drawn from the logit, hidden, and attention layers, fused by a
-compact MLP into four states.
+The repository does not currently claim to solve general RAG hallucination, real retrieval failure, multi-document conflict, or end-to-end answer correctness. The present PopQA experiment is a controlled falsification baseline with synthetic injected context.
 
-## Four-state formulation
+## Scientific contract
 
-Each sample is labeled into one of four states from the ground-truth context
-correctness $c^*$ and the model's own closed-book memory correctness $m^*$:
+For question `q`, evidence `E`, model `M`, and closed-book protocol `pi`, the controlled experiment estimates:
 
-| state | $c^*$ | $m^*$ | name |
-|------:|:-----:|:-----:|------|
-| 0 | 0 | 0 | double-wrong |
-| 1 | 0 | 1 | resistance |
-| 2 | 1 | 0 | correction |
-| 3 | 1 | 1 | agreement |
+| State | `C(q,E)` | `M_pi(q)` | Meaning |
+|---:|---:|---:|---|
+| 0 | 0 | 0 | neither source is available |
+| 1 | 0 | 1 | memory only |
+| 2 | 1 | 0 | context only |
+| 3 | 1 | 1 | both sources are available |
 
-```text
-state = c* * 2 + m*
-p_c   = P(correction) + P(agreement)   # context is correct
-p_m   = P(resistance)  + P(agreement)  # memory is correct
-```
+Source state, source utilization, answer correctness, and context faithfulness are separate variables. The four-state representation is a hypothesis, not a protected design choice. See `docs/research-contract.md` for the claim boundary and `docs/stage-1-plan.md` for the gates.
 
-## What this repository demonstrates
+## Current controlled baseline
 
-- **Learned > hand-crafted (discrimination).** The MLP's AUROC for $c^*$/$m^*$
-  beats every single hand-crafted signal *and* a linear logistic over all features.
-- **Calibration.** Temperature scaling keeps the ECE low, so $p_c$/$p_m$ are
-  usable as routing thresholds.
-- **Learned gating > hand-crafted gating (decoding).** `CRED-hard`/`CRED-mix`
-  outperform hand-gated baselines on single-token EM, especially on the hard
-  *resistance* state.
-- **Generalization.** The estimator transfers to held-out relation types.
+The corrected PopQA artifact contains 14,218 fact items and 28,436 context variants. Every fact has a stable `item_id`; its correct and wrong context variants remain in the same persisted split. Distinct facts sharing a relation and subject are no longer collapsed or grouped together. Samples retain the closed-book generation and decoding protocol for label audit.
 
-### Scope and limitations
+On the 5,688-sample test split, the joint MLP obtains macro-F1 0.594, balanced accuracy 0.573, NLL 0.827, and multiclass Brier 0.512. An independent binary-product baseline obtains macro-F1 0.497, balanced accuracy 0.481, NLL 0.897, and Brier 0.547. Subject-group bootstrap favors the joint MLP for all four registered diagnostics, including `neither_available` AUROC.
 
-- Contexts are synthesized by corpus substitution (NQ-Swap recipe) over real PopQA
-  and CounterFact questions. Wiring a real retriever is a documented next step.
-- Decoding is single-token (first-token) EM, matching the ARR/CAD/AdaCAD/CoRect
-  convention. Full multi-token generation is left as future work.
+The stronger result is decision-theoretic but still controlled: under three fixed diagnostic cost matrices, the joint MLP has lower bootstrapped action loss than the independent product, the best scalar four-state baseline, and joint multinomial logistic regression. This is a **provisional Gate-A pass**, not an end-to-end RAG claim.
 
-## Repository layout
+Gate B's lexical-policy audit changes the number of memory-answerable items from 1,792 under answer-initial exact-gold matching to 2,607 when official PopQA object aliases may occur anywhere. After retraining under four policies, the joint MLP retains lower action loss than the independent product and joint linear model for all three cost matrices; all 24 bootstrap intervals exclude zero. This passes the registered lexical label-sensitivity test, while prompt and decoding stability remain open. See `docs/gate-b-label-audit.md`.
 
-```text
-config.py            global config (override via CRED_MODEL / CRED_DATA / CRED_N /
-                     CRED_SEED / CRED_CROSS_MODEL env vars)
-run_experiment.py    end-to-end pipeline: build → extract → split → train →
-                     baselines → decode → ablation → generalization → cross-model
-results.py           prints a readable summary for every results_*.json
-baselines.py         single-signal discriminators + downstream decoders
-                     (greedy / CAD / ARR / AdaCAD / CoRect / CRED-hard / CRED-mix)
-estimator.py         4-way MLP + temperature scaling + AUROC/ECE metrics
-data/build.py        builds four-state labels from ITEM schemas
-data/facts.py        built-in 80-item offline smoke set
-data/popqa.py        real PopQA loader (corpus-substituted contexts)
-data/counterfact.py  CounterFact loader (corpus-substituted contexts)
-features/extract.py  S1–S14 signal extraction (two forward passes + hooks + LogitLens)
-signal-bank.md       detailed specification of every signal (formulas + pseudocode)
-run.sh               one-shot entrypoint
-slurm.sh             cluster (SLURM) template
-requirements.txt     Python dependencies
-```
+The complete-answer audit replaces first-token correctness proxies with paired complete generations. Context-conditioned entity exact match is about 0.49, while roughly 80% of wrong-context answers copy the injected distractor. A nominally repeated greedy closed-book run also changes item labels, so protocol-level Gate B remains unresolved rather than silently promoted to a pass. See `docs/complete-answer-audit.md`.
 
-## Quick start
+The outcome-grounded decision layer now compares context, memory, generated fusion, abstention, and simulated retrieve-again actions. The joint-state MLP retains significant realized-cost advantages over the independent product and direct answer-risk baseline under safety-first and balanced costs; under coverage-first costs, intervals against joint linear and direct risk cross zero. The tested fusion prompt improves context support but not world correctness and is almost never selected by the joint-state policy. See `docs/decision-layer-audit.md`.
+
+Gate C now has a complete fixed-corpus SciFact pilot. The deterministic TF-IDF retriever reaches recall@5 0.8225 and recall@10 0.8831, but extending retrieval from five to ten abstracts reduces context-conditioned verdict accuracy from 0.8023 to 0.7937 and fused accuracy from 0.8009 to 0.7792. On the fixed 139-claim test split, the joint MLP has the lowest realized safety-first cost (0.1709), but its advantage over the strongest direct baseline is not statistically resolved (versus direct answer risk: 0.0173, 95% bootstrap CI [-0.0112, 0.0471]). Joint linear is slightly better in the balanced and coverage-first regimes. **Gate C therefore does not pass the registered criterion.** The result points to a pivot: document retrieval availability must be separated from model-conditioned evidence usability. See `docs/gate-c-real-retrieval.md`.
+
+## Reproduce
+
+Install dependencies and run:
 
 ```bash
-pip install -r requirements.txt
-
-# 1) Offline smoke test (80 built-in facts, no network, a few minutes)
-bash run.sh --data facts
-
-# 2) Full comparison (real PopQA, 3000 items by default)
-bash run.sh --data popqa
-
-# 3) Second full dataset (CounterFact, 3000 items)
-bash run.sh --data counterfact
+python -m pip install -r requirements.txt
+python scripts/run_experiment.py --data popqa --force-build --force-extract
+python scripts/analyze.py --data popqa
+python scripts/stage1_falsification.py --data popqa --bootstrap 2000
 ```
 
-### Command-line flags
+The run writes under `artifacts/popqa/`:
 
-| flag | effect |
-|------|--------|
-| `--data {facts,popqa,counterfact}` | data source (default from `CRED_DATA`) |
-| `--model NAME` | HF model id (default `Qwen/Qwen2.5-7B`, or `CRED_MODEL`) |
-| `--force-build` | rebuild labels even if cached |
-| `--force-extract` | re-extract features even if cached |
-| `--skip-decoder` / `--skip-ablation` / `--skip-generalization` | skip stages for a quick run |
-
-The pipeline is resumable: each stage is skipped when its artifact already exists
-(`data.jsonl`, `features.npz`, `estimator.pt`, `topk_logits.pkl`).
-
-## Running on a remote GPU (e.g. an A100)
-
-```bash
-# package and upload from your workstation
-tar czf credence.tar.gz credence/
-scp credence.tar.gz user@a100-host:~:
-
-# on the remote: unpack, set up the env, run
-tar xzf credence.tar.gz && cd credence
-python -m venv .venv && source .venv/bin/activate
-pip install -U pip && pip install -r requirements.txt
-# (optional, A100 speed-up) pip install flash-attn --no-build-isolation
-
-# point to a pre-downloaded model cache to avoid re-downloading
-export HF_HOME=/data/hf_cache
-huggingface-cli download Qwen/Qwen2.5-7B --local-dir /data/hf_cache/Qwen/Qwen2.5-7B
-
-nohup bash run.sh --data popqa > run.out 2>&1 &
-tail -f logs/run_*.log          # progress
-python results.py               # summary table
+```text
+data.jsonl                  labeled samples and closed-book generations
+features.npz                17-dimensional observation vectors and labels
+topk_logits.pkl             legacy first-token diagnostic cache
+split.npz                   persisted train/validation/test indices and item groups
+estimator.pt                trained estimator, normalization, and temperature
+analysis.txt                descriptive controlled analysis
+stage1_falsification.json   machine-readable model and action-risk comparisons
+label_sensitivity.json      Gate-B results across four answer-label policies
+label_disagreements.jsonl   item-level label-policy disagreements
+complete_answers_all.jsonl  complete memory, context, and fusion generations and outcomes
+complete_answer_evaluation.json
+                            complete-answer correctness and context-support audit
+decision_evaluation.json    outcome-grounded five-action policy evaluation
 ```
 
-On a cluster, use `sbatch slurm.sh`.
+The real-retrieval pilot additionally writes under `artifacts/scifact/`:
 
-## Representative results
+```text
+raw/data/                         fixed SciFact corpus, claims, labels, rationales
+retrieval_pilot.jsonl             top-five ranked abstracts with provenance
+retrieval_pilot_top10.jsonl       empirical deeper-retrieval counterpart
+complete_verdicts.jsonl           top-five closed-book, context, and fusion outcomes
+complete_verdicts_top10.jsonl     top-ten verdict outcomes for retrieve-again
+features.npz                      693 x 17 real-retrieval observation bank
+split.npz                         fixed claim-level train/validation/test split
+estimator.pt                      calibrated SciFact joint-state estimator
+gate_c_decision_evaluation.json   realized five-action costs and bootstrap intervals
+```
 
-Leakage-free split: train/val/test are partitioned by `(relation, subject)`, so
-a subject's two context variants never cross the split boundary (the old
-sample-level split inflated AUROC by ~0.03). 3000 items × 2 contexts per
-dataset, `Qwen/Qwen2.5-7B` (base), main seed (the estimator is trained over
-seeds 0/1/2 for stability).
+`run_experiment.py` requires a CUDA-capable environment for the current 7B-model configuration. The small built-in `facts` dataset is available only as a pipeline smoke test.
 
-| metric | PopQA | CounterFact |
-|--------|------:|------------:|
-| AUROC($c^*$) / AUROC($m^*$) | 0.707 / 0.870 | 0.760 / 0.931 |
-| best single signal ($c^*$ / $m^*$) | 0.583 / 0.841 | 0.643 / 0.807 |
-| logistic (linear, all features) | 0.671 / 0.857 | 0.748 / 0.924 |
-| 4-way accuracy / macro-F1 | 53.2% / 0.540 | 58.4% / 0.624 |
-| ECE | 0.021 | 0.026 |
-| `CRED-mix` overall EM | 51.7% | 54.4% |
-| `CRED-mix` EM on *resistance* | 55.7% | 71.9% |
+## Repository structure
 
-## FAQ
+```text
+src/data/                   controlled ITEM loaders and auditable label construction
+src/features/extract.py     current 17-dimensional observation bank
+src/estimator.py            four-way MLP and temperature scaling
+scripts/run_experiment.py   build, extract, persist split, and train
+scripts/analyze.py          descriptive controlled diagnostics
+scripts/stage1_falsification.py
+                            joint, independent, scalar, and action-risk comparisons
+scripts/label_sensitivity.py
+                            Gate-B retraining across answer-label policies
+scripts/evaluate_complete_answers.py
+                            memory, context, and fusion answer outcomes
+scripts/evaluate_decisions.py
+                            outcome-grounded five-action policy evaluation
+scripts/build_scifact_pilot.py
+                            fixed-corpus real retrieval with evidence provenance
+scripts/evaluate_scifact_answers.py
+                            persisted complete SciFact verdict outcomes
+scripts/build_scifact_observations.py
+                            claim-level splits and observation extraction
+scripts/evaluate_scifact_decisions.py
+                            empirical retrieve-again and Gate-C decision comparison
+docs/research-contract.md   source of truth for variables and claim scope
+docs/stage-1-plan.md        completed falsification gates and PIVOT decision
+docs/stage-2-plan.md        active hierarchy, hypotheses, work packages, and stopping rules
+docs/experiment-registry.md executable Stage-2 experiment contracts and dependencies
+docs/gate-b-label-audit.md  label policies, sensitivity result, and qualification
+docs/complete-answer-audit.md
+                            full-answer correctness and context-support result
+docs/decision-layer-audit.md
+                            realized-cost action policy result and qualification
+docs/gate-c-real-retrieval.md
+                            fixed-corpus real-retrieval protocol and current boundary
+docs/signal-bank.md         legacy observation-bank implementation reference
+```
 
-- **`correction`/`double_wrong` counts are zero.** The model is too strong for that
-  fact batch. Use the base model `Qwen/Qwen2.5-7B` (closed-book is weaker and
-  errs more) or `--data popqa` (natural long-tail).
-- **PopQA download slow / fails.** Run `--data facts` for a smoke test first, or
-  `export HF_ENDPOINT=https://hf-mirror.com` (mirror for Mainland China).
-- **Out of GPU memory.** Use a smaller model via `CRED_MODEL=...` or `--model`.
-  7B in bf16 needs ~15 GB.
-- **Changing model / data.** Use `--model` / `--data`; a new dataset only needs to
-  produce the ITEM schema (see `data/facts.py`).
+## Current limitations
 
-## Roadmap
+SciFact currently defines `C=1` as retrieval of a matching annotated evidence document. The state-2 subset exposes why this is not evidence usability: when memory is wrong but a gold document is retrieved, top-five context accuracy is only 0.50. Closed-book answerability is still one protocol-specific inference event, and protocol stability remains unresolved. The test split has only 139 claims and eight state-0 examples, so decision intervals are wide. Action costs remain preregistered diagnostics rather than deployment estimates.
 
-1. **Real retrieved passages** — swap the synthetic contexts in `data/popqa.py`
-   for an actual retriever (e.g. Contriever) or NQ-Swap original data.
-2. **More signals** — S15 probe and S17–S19 external signals
-   (retrieval confidence / staleness / source authority); hooks already reserved.
-3. **Multi-token generation-level EM** — upgrade decoding from first-token.
-4. **More baselines & models** — COIECD / ProbeRAG / PH3; LLaMA-3-8B cross-model.
+The current Stage-1 verdict is **PIVOT**. Gate A passes in the controlled construction and lexical Gate B passes, but protocol-level Gate B remains unresolved and Gate C fails its registered realized-cost criterion. The next thesis should model a hierarchy—retrieval availability, evidence sufficiency, model-conditioned utilization, and answer risk—rather than defend document retrieval availability as a binary context-usability state.

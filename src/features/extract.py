@@ -16,6 +16,7 @@ Convention: each sample provides context / question / gold, with two forward pas
 """
 
 import math
+import gc
 
 import torch
 import torch.nn.functional as F
@@ -163,7 +164,7 @@ def hidden_features(fwd, hs_ctx, mlp_delta, target_tok):
 # --------------------------------------------------------------------------- #
 def attn_features(fwd, hs_ctx, attns_ctx, attn_delta, ctx_len):
     last = hs_ctx[-1].shape[0] - 1                   # the "Answer:" last position
-    A = attns_ctx[-1].float()                        # last layer [H,T,T]
+    A = attns_ctx[-1]                                # last layer [H,T,T]
 
     # S11 context attention quality: mean attention from last position to the context region
     alpha = A[:, last, :ctx_len].mean().item()
@@ -190,7 +191,7 @@ def attn_features(fwd, hs_ctx, attns_ctx, attn_delta, ctx_len):
     # S14 contest trend: first-vs-last difference of the last-position -> context
     #     attention sum over the last quarter of layers
     qs = fwd.L - fwd.L // 4
-    vals = [attns_ctx[l].float()[:, last, :ctx_len].sum().item()
+    vals = [attns_ctx[l][:, last, :ctx_len].sum(dtype=torch.float32).item()
             for l in range(qs, fwd.L)]
     trend = vals[-1] - vals[0]
 
@@ -204,6 +205,11 @@ def extract(fwd, sample):
     """sample: {context, question, gold, pri_prompt, ctx_prompt}
     returns (features[17], meta, z_pri[V], z_ctx[V])"""
     pri = fwd.run(sample["pri_prompt"])
+    pri_logits = pri["logits"][-1]
+    # Release the prior pass activations before running the longer evidence pass.
+    # Keeping both attention tensors live makes SciFact's multi-abstract prompts
+    # unnecessarily close to the GPU memory ceiling.
+    del pri
     ctx = fwd.run(sample["ctx_prompt"])
 
     # Answers are generated after "Answer:"; the first token usually carries a leading
@@ -217,12 +223,12 @@ def extract(fwd, sample):
     # S8/S9's target token uses the model's own prediction (prior argmax), not gold:
     # at deployment there is no gold, and pri_argmax detects whether the context pulls
     # the model away from its own parametric answer — no label leakage.
-    pri_argmax = int(pri["logits"][-1].argmax().item())
+    pri_argmax = int(pri_logits.argmax().item())
 
     ctx_len = len(fwd.tokenizer(sample["context"], add_special_tokens=False).input_ids)
 
     feat = []
-    feat += logit_features(pri["logits"][-1], ctx["logits"][-1])
+    feat += logit_features(pri_logits, ctx["logits"][-1])
     feat += hidden_features(fwd, ctx["hs"], ctx["mlp_delta"], pri_argmax)
     feat += attn_features(fwd, ctx["hs"], ctx["attns"], ctx["attn_delta"], ctx_len)
 
@@ -232,7 +238,7 @@ def extract(fwd, sample):
         "pri_argmax": pri_argmax,
         "ctx_argmax": int(ctx["logits"][-1].argmax().item()),
     }
-    return feat, meta, pri["logits"][-1], ctx["logits"][-1]
+    return feat, meta, pri_logits, ctx["logits"][-1]
 
 
 def _topk_cache(z_pri, z_ctx, gold_tok, k):
@@ -263,4 +269,8 @@ def extract_all(fwd, samples, top_k=100, progress=True):
         X.append(feat)
         metas.append(meta)
         topks.append(_topk_cache(z_pri, z_ctx, meta["gold_tok"], top_k))
+        del z_pri, z_ctx
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     return np.asarray(X, dtype=np.float32), metas, topks

@@ -12,7 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, classification_report
 
-from config import STATE_NAMES, T_GRID
+from config import (STATE_NAMES, T_GRID, HIDDEN_DIM, HIDDEN_LAYERS, DROPOUT,
+                    WEIGHT_DECAY, EARLY_STOP_PATIENCE)
 
 
 def ece(y_true, probs, n_bins=10):
@@ -47,10 +48,18 @@ def p_cm_from_probs(probs):
 
 
 class Estimator(nn.Module):
-    def __init__(self, d, h=64):
+    def __init__(self, d, h=None, n_layers=None, dropout=None):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d, h), nn.ReLU(), nn.Dropout(0.1), nn.Linear(h, 4))
+        h = h if h is not None else HIDDEN_DIM
+        n_layers = n_layers if n_layers is not None else HIDDEN_LAYERS
+        dropout = dropout if dropout is not None else DROPOUT
+        layers = []
+        prev = d
+        for _ in range(n_layers):
+            layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(dropout)]
+            prev = h
+        layers.append(nn.Linear(prev, 4))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
@@ -59,13 +68,28 @@ class Estimator(nn.Module):
 # ---------------------------------------------------------------- single fit
 def _fit_once(model, Xtr_t, ytr_t, Xva_t, yva_t, epochs, lr, seed, device):
     torch.manual_seed(seed)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
+    best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    best_acc = -1.0
+    bad = 0
     for _ in range(epochs):
         model.train()
         opt.zero_grad()
         loss = F.cross_entropy(model(Xtr_t), ytr_t)
         loss.backward()
         opt.step()
+        model.eval()
+        with torch.no_grad():
+            va_acc = float((model(Xva_t).argmax(1) == yva_t).float().mean().item())
+        if va_acc > best_acc:
+            best_acc = va_acc
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+            if bad >= EARLY_STOP_PATIENCE:
+                break
+    model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
         va_logits = model(Xva_t)
