@@ -47,17 +47,11 @@ SIGNAL_IDX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
 
 def _aurc(scores, hits):
-    """Area under the risk-coverage curve (lower is better); larger scores abstain first."""
-    order = np.argsort(-np.asarray(scores, dtype=float))
-    h = np.asarray(hits, dtype=float)[order]
-    total = h.sum()
-    risk_sum = 0.0
-    cum_rej = 0.0
-    for k in range(len(h) - 1):
-        n_acc = len(h) - k
-        risk_sum += 1.0 - (total - cum_rej) / n_acc
-        cum_rej += h[k]
-    return float(risk_sum / len(h))
+    """Area under the risk-coverage curve; lower scores are retained first."""
+    order = np.argsort(np.asarray(scores, dtype=float))
+    errors = 1.0 - np.asarray(hits, dtype=float)[order]
+    risk = np.cumsum(errors) / np.arange(1, len(errors) + 1)
+    return float(risk.mean())
 
 
 # --------------------------------------------------------------------------- #
@@ -80,10 +74,10 @@ def group_ids(samples):
     keys = {}
     ids = []
     for s in samples:
-        k = (s["relation"], s["subject"])
-        if k not in keys:
-            keys[k] = len(keys)
-        ids.append(keys[k])
+        key = s["item_id"]
+        if key not in keys:
+            keys[key] = len(keys)
+        ids.append(keys[key])
     return np.array(ids)
 
 
@@ -209,9 +203,14 @@ def main():
     with open(adir / "topk_logits.pkl", "rb") as f:
         topks = pickle.load(f)
 
-    # reproduce the exact leakage-free split
-    gid = group_ids(samples)
-    splits = make_group_split(gid, m_star, seed=config.SEED)
+    # Use the persisted split when available; legacy artifacts reconstruct it.
+    split_path = adir / "split.npz"
+    if split_path.exists():
+        saved_split = np.load(split_path)
+        splits = {name: saved_split[name] for name in ["tr", "va", "te"]}
+    else:
+        gid = group_ids(samples)
+        splits = make_group_split(gid, m_star, seed=config.SEED)
     tr, va, te = splits["tr"], splits["va"], splits["te"]
     Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
 
@@ -286,7 +285,7 @@ def main():
           f"hand-crafted(1-conf_ctx)={hand['aurc']:.3f}")
 
     # ---------------- layer D ----------------
-    print("\n## D. downstream EM ceiling (oracle: perfect 4-state discriminator)")
+    print("\n## D. fixed-candidate hard-routing diagnostic")
     hit_ctx = np.array([_ctx_hit(tk) for tk in topks])[te]
     hit_pri = np.array([_pri_hit(tk) for tk in topks])[te]
     oracle = 0.0
@@ -299,7 +298,8 @@ def main():
         oracle += best_k * frac
         print(f"  {STATE_NAMES[k]:<14} share={frac:>5.2f}  best(ctx,pri) EM="
               f"{hit_ctx[mask].mean():.3f}/{hit_pri[mask].mean():.3f} -> {best_k:.3f}")
-    print(f"  oracle EM upper bound = {oracle:.3f}  (no method can exceed this by routing)")
+    print(f"  fixed-candidate oracle EM = {oracle:.3f}")
+    print("  (upper bound only for hard selection between the cached context and closed-book candidates)")
     print("=" * 72)
 
 

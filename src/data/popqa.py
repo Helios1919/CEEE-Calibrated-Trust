@@ -10,6 +10,8 @@ retrieved passages, wire in a retriever (noted in the README as a next step); th
 interface only depends on the ITEM schema, so it is a drop-in swap.
 """
 
+import hashlib
+import json
 import random
 
 
@@ -37,12 +39,21 @@ def make_items(split="test", n=-1, max_per_prop=-1, seed=0):
         gold = _col(row, "obj_ln", "obj", "answer")
         prop = _col(row, "prop", "prop_ln", "relation")   # prop is the bare relation name (e.g. capital)
         question = _col(row, "question")
+        aliases_raw = _col(row, "o_aliases", "aliases")
+        if isinstance(aliases_raw, str):
+            try:
+                aliases = json.loads(aliases_raw)
+            except json.JSONDecodeError:
+                aliases = [aliases_raw]
+        else:
+            aliases = list(aliases_raw or [])
+        aliases = [str(alias) for alias in aliases if str(alias).strip() and str(alias) != str(gold)]
         if not (subj and gold and prop):
             continue
         prop = str(prop)
         if question is None:
             question = f"What is the {prop} of {subj}?"
-        by_rel.setdefault(prop, []).append((str(subj), str(gold), str(question)))
+        by_rel.setdefault(prop, []).append((str(subj), str(gold), str(question), aliases))
 
     # Sampling: at most max_per_prop items per relation (-1 = no cap), then shuffle
     random.seed(seed)
@@ -50,9 +61,21 @@ def make_items(split="test", n=-1, max_per_prop=-1, seed=0):
     for rel, rows in by_rel.items():
         if max_per_prop and max_per_prop > 0:
             rows = rows[:max_per_prop]
-        for subj, gold, q in rows:
-            pool.append({"relation": rel, "subject": subj, "gold": gold, "question": q})
+        for subj, gold, q, aliases in rows:
+            pool.append({"relation": rel, "subject": subj, "gold": gold,
+                         "question": q, "aliases": aliases})
     random.shuffle(pool)
+
+    # PopQA can repeat an exact QA tuple. Remove only exact duplicates: rows with
+    # different gold objects remain distinct facts even when relation and subject match.
+    deduped = []
+    seen = set()
+    for it in pool:
+        key = (it["relation"], it["subject"], it["question"], it["gold"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(it)
+    pool = deduped
     if n > 0:
         pool = pool[:n]
 
@@ -65,10 +88,14 @@ def make_items(split="test", n=-1, max_per_prop=-1, seed=0):
         rel = it["relation"]
         cands = [g for g in golds_by_rel[rel] if g != it["gold"]]
         dist = random.choice(cands) if cands else it["gold"] + " (wrong)"
+        identity = "\x1f".join([rel, it["subject"], it["question"], it["gold"]])
+        item_id = "popqa-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
         items.append({
+            "item_id": item_id,
             "relation": rel,
             "subject": it["subject"],
             "gold": it["gold"],
+            "aliases": it["aliases"],
             "distractor": dist,
             "question": it["question"],
             "correct_statement": f"The {rel} of {it['subject']} is {it['gold']}.",

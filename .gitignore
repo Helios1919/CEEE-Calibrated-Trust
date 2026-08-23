@@ -13,9 +13,5 @@ logs/
 run.out
 *.log
 
-# Personal notes / draft (not part of the public repo)
-docs/plan.md
-docs/paper.tex
-
 # Archives
 *.tar.gz

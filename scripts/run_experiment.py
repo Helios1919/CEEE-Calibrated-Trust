@@ -74,29 +74,26 @@ def _split(a, y_a, test_size, seed):
 
 
 def group_ids(samples):
-    """Assign each sample a (relation, subject) group id for leakage-free grouping."""
+    """Assign each sample its persisted fact-item group for leakage control."""
     keys = {}
     ids = []
     for s in samples:
-        k = (s["relation"], s["subject"])
-        if k not in keys:
-            keys[k] = len(keys)
-        ids.append(keys[k])
+        key = s["item_id"]
+        if key not in keys:
+            keys[key] = len(keys)
+        ids.append(keys[key])
     return np.array(ids)
 
 
 def make_group_split(groups, group_label, seed=0):
-    """Split train/val/test by group: a subject's two variants (correct/wrong context)
-    never cross a split boundary.
+    """Split train/val/test by item: its correct/wrong context variants never
+    cross a split boundary.
 
-    The build stage produces two samples per subject (c*=1 and c*=0) that share the
-    question/context text and the same m*. A sample-level random split would let the
-    model "memorize" a subject's m* on train and then, given the same text on test,
-    recognize the subject and guess m* directly — label leakage that inflates metrics.
+    The build stage produces two samples per item that share the question and
+    closed-book outcome. A sample-level random split would expose the same item
+    on train and test, inflating the measured memory-label performance.
 
-    groups: [N] group ids (from group_ids()); group_label: [N] group-level labels
-    (stratified by m*; m* is constant within a group, so group-level stratification
-    equals sample-level stratification with no leakage).
+    groups: [N] item ids; group_label: [N] labels used for stratification.
     Returns sample indices (0..N-1) for {"tr","va","te"}.
     """
     uniq_g, first_idx = np.unique(groups, return_index=True)
@@ -172,9 +169,10 @@ def main():
             topks = pickle.load(f)
     logging.info(f"  features X: {X.shape} ({len(FEATURE_NAMES)} dims)")
 
-    # 3 split: leakage-free grouped split (a subject's correct/wrong variants stay together)
+    # 3 split: leakage-free grouped split (an item's context variants stay together)
     gid = group_ids(samples)
     splits = make_group_split(gid, m_star, seed=config.SEED)
+    np.savez(adir / "split.npz", **splits, group_id=gid)
 
     # 4 train: multi-seed 4-way estimator
     logging.info("==> [3/3] train estimator (multi-seed)")
